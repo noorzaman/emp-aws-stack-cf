@@ -1,0 +1,367 @@
+{
+	"AWSTemplateFormatVersion": "2010-09-09",
+	"Description": "AWS CloudFormation template that contains EMP Lambda function behind an API Gateway",
+	"Parameters": {
+		"S3Bucket": {
+			"Description": "The name of the S3 bucket that contains the source code of your Lambda function.",
+			"Type": "String",
+			"Default": "zappa-cxr0zynav"
+		},
+		"S3LambdaKey": {
+			"Description": "The location and name of your lambda .zip file.",
+			"Type": "String",
+			"Default": "add_edit_space.zip"
+		},
+		"S3CalendarApiKey": {
+			"Description": "The location and name of your calendar API .zip file.",
+			"Type": "String",
+			"Default": "calendar_api_v1.zip"
+		}
+	},
+
+	"Resources": {
+
+		"CalendarApi": {
+			"Type": "AWS::ElasticBeanstalk::Application",
+			"Properties": {
+				"Description": "Integration Service with Google Calendar API"
+			}
+		},
+
+		"CalendarApiV1": {
+      "Type": "AWS::ElasticBeanstalk::ApplicationVersion",
+      "Properties": {
+        "ApplicationName": { "Ref": "CalendarApi" },
+				"Description": "V1 version of Calendar API Web Service",
+				"SourceBundle": {
+					"S3Bucket": {
+						"Ref": "S3Bucket"
+					},
+					"S3Key": {
+						"Ref": "S3CalendarApiKey"
+					}
+				}
+      }
+    },
+
+		"CalendarApiConfigTemplate": {
+      "Type": "AWS::ElasticBeanstalk::ConfigurationTemplate",
+      "Properties": {
+        "ApplicationName": { "Ref": "CalendarApi" },
+        "Description": "AWS ElasticBeanstalk Calendar API Configuration Template",
+				"SolutionStackName": "64bit Amazon Linux 2017.09 v2.6.6 running Python 3.6",
+        "OptionSettings": [
+					{
+            "Namespace": "aws:autoscaling:asg",
+            "OptionName": "MinSize",
+            "Value": "1"
+          },
+          {
+            "Namespace": "aws:autoscaling:asg",
+            "OptionName": "MaxSize",
+            "Value": "1"
+          },
+          {
+            "Namespace": "aws:elasticbeanstalk:environment",
+            "OptionName": "EnvironmentType",
+            "Value": "LoadBalanced"
+          }
+        ]
+      }
+    },
+
+    "DevelopmentEnv": {
+      "Type": "AWS::ElasticBeanstalk::Environment",
+      "Properties": {
+				"ApplicationName": { "Ref": "CalendarApi" },
+				"Description": "Main development environment",
+        "TemplateName": { "Ref": "CalendarApiConfigTemplate" },
+        "VersionLabel": { "Ref": "CalendarApiV1" }
+      }
+    },
+
+		"AddEditEMPLambda": {
+			"Type": "AWS::Lambda::Function",
+			"Properties": {
+				"Code": {
+					"S3Bucket": {
+						"Ref": "S3Bucket"
+					},
+					"S3Key": {
+						"Ref": "S3LambdaKey"
+					}
+				},
+				"Description": "EMP Add/Edit Lambda",
+				"Handler": "add_edit_space.lambda_handler",
+				"MemorySize": 128,
+				"Role": {
+					"Fn::GetAtt": ["LambdaRole", "Arn"]
+				},
+				"Runtime": "python3.6",
+				"Timeout": 15
+			}
+		},
+
+		"LambdaPermission": {
+			"Type": "AWS::Lambda::Permission",
+			"Properties": {
+				"Action": "lambda:InvokeFunction",
+				"FunctionName": {
+					"Fn::GetAtt": ["AddEditEMPLambda", "Arn"]
+				},
+				"Principal": "apigateway.amazonaws.com",
+				"SourceArn": {
+					"Fn::Join": ["", ["arn:aws:execute-api:", {
+						"Ref": "AWS::Region"
+					}, ":", {
+						"Ref": "AWS::AccountId"
+					}, ":", {
+						"Ref": "EmpApi"
+					}, "/*"]]
+				}
+			}
+		},
+
+		"LambdaRole": {
+			"Type": "AWS::IAM::Role",
+			"Properties": {
+				"AssumeRolePolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [{
+						"Effect": "Allow",
+						"Principal": {
+							"Service": "lambda.amazonaws.com"
+						},
+						"Action": ["sts:AssumeRole"]
+					}]
+				},
+				"ManagedPolicyArns": [
+					"arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+					"arn:aws:iam::aws:policy/AmazonRekognitionReadOnlyAccess",
+					"arn:aws:iam::aws:policy/CloudWatchLogsFullAccess",
+					"arn:aws:iam::aws:policy/AmazonS3FullAccess"
+				],
+				"Path": "/",
+				"Policies": [{
+					"PolicyName": "logs",
+					"PolicyDocument": {
+						"Version": "2012-10-17",
+						"Statement": [{
+							"Effect": "Allow",
+							"Action": [
+								"logs:*"
+							],
+							"Resource": "arn:aws:logs:*:*:*"
+						}]
+					}
+				}]
+			}
+		},
+
+		"EmpApi": {
+			"Type": "AWS::ApiGateway::RestApi",
+			"Properties": {
+				"Name": "EMP API",
+				"Description": "API used for EMP requests",
+				"FailOnWarnings": true
+			}
+		},
+
+		"ApiGatewayCloudWatchLogsRole": {
+			"Type": "AWS::IAM::Role",
+			"Properties": {
+				"AssumeRolePolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [{
+						"Effect": "Allow",
+						"Principal": {
+							"Service": ["apigateway.amazonaws.com"]
+						},
+						"Action": ["sts:AssumeRole"]
+					}]
+				},
+				"Policies": [{
+					"PolicyName": "ApiGatewayLogsPolicy",
+					"PolicyDocument": {
+						"Version": "2012-10-17",
+						"Statement": [{
+							"Effect": "Allow",
+							"Action": [
+								"logs:CreateLogGroup",
+								"logs:CreateLogStream",
+								"logs:DescribeLogGroups",
+								"logs:DescribeLogStreams",
+								"logs:PutLogEvents",
+								"logs:GetLogEvents",
+								"logs:FilterLogEvents"
+							],
+							"Resource": "*"
+						}]
+					}
+				}]
+			}
+		},
+
+		"ApiGatewayAccount": {
+			"Type": "AWS::ApiGateway::Account",
+			"Properties": {
+				"CloudWatchRoleArn": {
+					"Fn::GetAtt": ["ApiGatewayCloudWatchLogsRole", "Arn"]
+				}
+			}
+		},
+
+		"EmpApiStage": {
+			"DependsOn": ["ApiGatewayAccount"],
+			"Type": "AWS::ApiGateway::Stage",
+			"Properties": {
+				"DeploymentId": {
+					"Ref": "ApiDeployment"
+				},
+				"MethodSettings": [{
+					"DataTraceEnabled": true,
+					"HttpMethod": "*",
+					"LoggingLevel": "INFO",
+					"ResourcePath": "/*"
+				}],
+				"RestApiId": {
+					"Ref": "EmpApi"
+				},
+				"StageName": "LATEST"
+			}
+		},
+
+		"ApiDeployment": {
+			"Type": "AWS::ApiGateway::Deployment",
+			"DependsOn": ["PlaceRequest"],
+			"Properties": {
+				"RestApiId": {
+					"Ref": "EmpApi"
+				},
+				"StageName": "stage"
+			}
+		},
+
+		"PlaceResource": {
+			"Type": "AWS::ApiGateway::Resource",
+			"Properties": {
+				"RestApiId": {
+					"Ref": "EmpApi"
+				},
+				"ParentId": {
+					"Fn::GetAtt": ["EmpApi", "RootResourceId"]
+				},
+				"PathPart": "place"
+			}
+		},
+
+		"PlaceRequest": {
+			"DependsOn": ["LambdaPermission", "EmpApi"],
+			"Type": "AWS::ApiGateway::Method",
+			"Properties": {
+				"HttpMethod": "PUT",
+				"AuthorizationType": "NONE",
+				"Integration": {
+					"Type": "AWS_PROXY",
+					"IntegrationHttpMethod": "POST",
+					"Uri": {
+						"Fn::Join": ["", ["arn:aws:apigateway:", {
+							"Ref": "AWS::Region"
+						}, ":lambda:path/2015-03-31/functions/", {
+							"Fn::GetAtt": ["AddEditEMPLambda", "Arn"]
+						}, "/invocations"]]
+					},
+					"IntegrationResponses": [{
+						"StatusCode": 200
+					}]
+				},
+				"RequestParameters": {
+					"method.request.header.Action-Event": true
+				},
+				"MethodResponses": [{
+					"ResponseModels": {
+						"application/json": "Empty"
+					},
+					"StatusCode": 200
+				}],
+				"ResourceId": {
+					"Ref": "PlaceResource"
+				},
+				"RestApiId": {
+					"Ref": "EmpApi"
+				}
+			}
+		},
+
+		"PlaceCORSRequest": {
+			"DependsOn": "LambdaPermission",
+			"Type": "AWS::ApiGateway::Method",
+			"Properties": {
+				"HttpMethod": "OPTIONS",
+				"AuthorizationType": "NONE",
+				"MethodResponses": [{
+					"StatusCode": "200",
+					"ResponseParameters": {
+						"method.response.header.Access-Control-Allow-Origin": true,
+						"method.response.header.Access-Control-Allow-Headers": true,
+						"method.response.header.Access-Control-Allow-Methods": true
+					},
+					"ResponseModels": {}
+				}],
+				"RequestParameters": {},
+				"Integration": {
+					"Type": "MOCK",
+					"RequestTemplates": {
+            "application/json": "{statusCode:200}"
+          },
+					"IntegrationResponses": [{
+            "StatusCode": "200",
+            "ResponseParameters": {
+              "method.response.header.Access-Control-Allow-Origin": "'*'",
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Amz-User-Agent'",
+              "method.response.header.Access-Control-Allow-Methods": "'*'"
+            },
+            "ResponseTemplates": {
+              "application/json": ""
+            }
+          }]
+				},
+				"ResourceId": {
+					"Ref": "PlaceResource"
+				},
+				"RestApiId": {
+					"Ref": "EmpApi"
+				}
+			}
+		}
+	},
+
+	"Outputs": {
+
+		"RootUrl": {
+			"Description": "Root URL of the API gateway to Serverless Add/Edit",
+			"Value": {
+				"Fn::Join": ["", ["https://", {
+					"Ref": "EmpApi"
+				}, ".execute-api.", {
+					"Ref": "AWS::Region"
+				}, ".amazonaws.com/LATEST/place"]]
+			}
+		},
+
+		"URL": {
+      "Description": "Root URL of the Calendar API Rest Service",
+      "Value": {
+        "Fn::Join": ["", ["http://", {
+          "Fn::GetAtt": ["DevelopmentEnv", "EndpointURL"]
+        }]]
+      }
+    },
+
+		"LambdaArn": {
+			"Value": {
+				"Fn::GetAtt": ["AddEditEMPLambda", "Arn"]
+			}
+		}
+	}
+}
